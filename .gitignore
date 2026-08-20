@@ -1,7 +1,8 @@
 .DS_Store
 *.db
 node_modules
-lib
+/lib
+typescript/lib
 .venv
 __pycache__
 *.pyc

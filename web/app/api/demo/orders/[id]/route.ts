@@ -1,14 +1,10 @@
 import { NextResponse } from "next/server";
-import {
-  getTemporalClient,
-  isFulfillWorkflow,
-} from "@/lib/temporal";
+import { demoVariantByWorkflow } from "@/lib/demo-workflows";
+import { getTemporalClient, isDemoWorkflow } from "@/lib/temporal";
 
 type StatusDetails = {
   step?: string;
   waiting_for_approval?: boolean;
-  outcome?: string;
-  tracking?: string;
 };
 
 export async function GET(
@@ -21,39 +17,28 @@ export async function GET(
   const description = await handle.describe();
   const status = description.status.name;
   const workflowType = description.type;
+  const variant = demoVariantByWorkflow(workflowType);
 
   let step: string | null = null;
   let waitingForApproval = false;
-  let outcome: string | null = null;
-  let tracking: string | null = null;
   let result: unknown = null;
   let error: string | null = null;
 
   if (status === "RUNNING") {
     try {
       const details = (await handle.query("status")) as StatusDetails;
-      step = details.step ?? null;
+      step = details.step ?? variant?.steps[0] ?? "processing_payment";
       waitingForApproval = Boolean(details.waiting_for_approval);
-      outcome = details.outcome ?? null;
-      tracking = details.tracking || null;
     } catch {
-      step = isFulfillWorkflow(workflowType)
-        ? "processing_payment"
-        : "received";
-      waitingForApproval = isFulfillWorkflow(workflowType);
+      step = variant?.steps[0] ?? "processing_payment";
+      waitingForApproval = Boolean(variant?.hasApproval);
     }
   } else if (status === "COMPLETED") {
     result = await handle.result();
     if (typeof result === "string") {
       result = { summary: result };
-      step = "completed";
-      outcome = "completed";
-    } else {
-      const completed = result as { outcome?: string; tracking?: string };
-      step = completed.outcome === "cancelled" ? "cancelled" : "completed";
-      outcome = completed.outcome ?? "completed";
-      tracking = completed.tracking ?? null;
     }
+    step = "completed";
   } else if (status === "FAILED" || status === "TIMED_OUT") {
     try {
       await handle.result();
@@ -65,11 +50,10 @@ export async function GET(
   return NextResponse.json({
     workflowId: id,
     workflowType,
+    variantId: variant?.id ?? null,
     status,
     step,
     waitingForApproval,
-    outcome,
-    tracking,
     result,
     error,
   });
@@ -84,21 +68,18 @@ export async function POST(
   const client = await getTemporalClient();
   const handle = client.workflow.getHandle(id);
   const description = await handle.describe();
-  const isFulfill = isFulfillWorkflow(description.type);
 
-  if (body.action === "approve") {
-    await handle.signal(isFulfill ? "approveOrder" : "approve_shipment");
-  } else if (body.action === "cancel") {
-    if (isFulfill) {
-      return NextResponse.json(
-        { error: "OrderFulfillWorkflow has no cancel signal" },
-        { status: 400 },
-      );
-    }
-    await handle.signal("cancel_order", "customer");
-  } else {
+  if (!isDemoWorkflow(description.type)) {
+    return NextResponse.json(
+      { error: "Not a TypeScript demo workflow" },
+      { status: 400 },
+    );
+  }
+
+  if (body.action !== "approve") {
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   }
 
+  await handle.signal("approveOrder");
   return NextResponse.json({ ok: true });
 }

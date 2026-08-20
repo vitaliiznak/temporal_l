@@ -2,46 +2,29 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { formatCents } from "@/lib/catalog";
-import {
-  FULFILL_HAPPY_PATH_STEPS,
-  HAPPY_PATH_STEPS,
-  STEP_LABELS,
-} from "@/lib/steps";
+import { demoVariantByWorkflow } from "@/lib/demo-workflows";
+import { STEP_LABELS } from "@/lib/steps";
 
-type OrderResult = {
-  outcome?: string;
-  reason?: string;
-  customer_name?: string;
-  item?: string;
-  quantity?: number;
-  total_cents?: number;
-  summary: string;
-  emailed?: string;
-  tracking?: string;
-};
-
-type OrderState = {
+type DemoState = {
   workflowId: string;
   workflowType?: string;
+  variantId?: string | null;
   status: string;
   step: string | null;
   waitingForApproval: boolean;
-  outcome: string | null;
-  tracking: string | null;
-  result: OrderResult | string | null;
+  result: { summary?: string } | string | null;
   error: string | null;
 };
 
-export function OrderStatus({ workflowId }: { workflowId: string }) {
-  const [state, setState] = useState<OrderState | null>(null);
+export function DemoWorkflowStatus({ workflowId }: { workflowId: string }) {
+  const [state, setState] = useState<DemoState | null>(null);
   const [signaling, setSignaling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
-      const response = await fetch(`/api/orders/${workflowId}`, {
+      const response = await fetch(`/api/demo/orders/${workflowId}`, {
         cache: "no-store",
       });
       if (!response.ok || cancelled) {
@@ -58,12 +41,12 @@ export function OrderStatus({ workflowId }: { workflowId: string }) {
     };
   }, [workflowId]);
 
-  async function signal(action: "approve" | "cancel") {
+  async function approve() {
     setSignaling(true);
-    await fetch(`/api/orders/${workflowId}`, {
+    await fetch(`/api/demo/orders/${workflowId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action: "approve" }),
     });
     setSignaling(false);
   }
@@ -76,25 +59,23 @@ export function OrderStatus({ workflowId }: { workflowId: string }) {
     );
   }
 
-  const isFulfill = state.workflowType === "OrderFulfillWorkflow";
-  const cancelled = state.step === "cancelled" || state.step === "compensating";
+  const variant = demoVariantByWorkflow(state.workflowType ?? "");
   const done =
     state.status === "COMPLETED" ||
     state.status === "FAILED" ||
-    state.status === "TIMED_OUT" ||
-    state.step === "cancelled";
-  const current = state.step ?? "received";
-  const steps = isFulfill
-    ? FULFILL_HAPPY_PATH_STEPS
-    : cancelled
-      ? ([
-          "received",
-          "screening",
-          "charging_payment",
-          "compensating",
-          "cancelled",
-        ] as const)
-      : HAPPY_PATH_STEPS;
+    state.status === "TIMED_OUT";
+  const current = state.step ?? variant?.steps[0] ?? "processing_payment";
+  const steps = (variant?.steps ?? [
+    "processing_payment",
+    "reserving_inventory",
+    "delivering",
+    "completed",
+  ]).filter(
+    (step) =>
+      step !== "awaiting_approval" ||
+      state.waitingForApproval ||
+      current === "awaiting_approval",
+  );
   const summary =
     typeof state.result === "string"
       ? state.result
@@ -105,12 +86,16 @@ export function OrderStatus({ workflowId }: { workflowId: string }) {
       <div>
         <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           {state.status}
-          {state.outcome ? ` · ${state.outcome}` : ""}
           {state.workflowType ? ` · ${state.workflowType}` : ""}
         </p>
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-950 dark:text-white">
-          Order status
+          {variant ? `${variant.id}. ${variant.title}` : "Demo workflow"}
         </h1>
+        {variant ? (
+          <p className="mt-1 font-mono text-xs text-zinc-600 dark:text-zinc-400">
+            typescript/{variant.file}
+          </p>
+        ) : null}
         <p className="mt-1 font-mono text-xs text-zinc-600 dark:text-zinc-400">
           {workflowId}
         </p>
@@ -139,60 +124,29 @@ export function OrderStatus({ workflowId }: { workflowId: string }) {
         })}
       </ol>
 
-      {state.waitingForApproval ||
-      (isFulfill && state.status === "RUNNING") ? (
+      {state.waitingForApproval && state.status === "RUNNING" ? (
         <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/40 dark:bg-amber-950/40">
           <p className="text-sm text-amber-950 dark:text-amber-100">
-            {isFulfill ? (
-              <>
-                Default <code>src/workflows.ts</code> is the happy path. For
-                human-in-the-loop, copy{" "}
-                <code>demo/workflows2.ts</code> or{" "}
-                <code>demo/workflows3.ts</code> over it, start an order over
-                $10,000, then send <strong>approveOrder</strong>.
-              </>
-            ) : (
-              <>
-                Workflow is blocked on a <strong>signal</strong>. Approve
-                shipment, or wait 20s and it auto-approves. Cancel runs the saga
-                compensation.
-              </>
-            )}
+            Workflow is blocked on the{" "}
+            <code className="font-mono text-xs">approveOrder</code> signal.
+            {variant?.hasTimeout
+              ? " If you wait 30 seconds it fails with Approval timed out."
+              : " It will wait until you approve."}
           </p>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={signaling}
-              onClick={() => signal("approve")}
-              className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900"
-            >
-              {isFulfill ? "Approve order" : "Approve shipment"}
-            </button>
-            {isFulfill ? null : (
-              <button
-                type="button"
-                disabled={signaling}
-                onClick={() => signal("cancel")}
-                className="rounded-lg border border-zinc-400 bg-white px-3 py-2 text-sm text-zinc-900 disabled:opacity-50 dark:border-zinc-500 dark:bg-transparent dark:text-zinc-100"
-              >
-                Cancel order
-              </button>
-            )}
-          </div>
+          <button
+            type="button"
+            disabled={signaling}
+            onClick={approve}
+            className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900"
+          >
+            Send approveOrder
+          </button>
         </div>
       ) : null}
 
       {summary ? (
         <div className="rounded-lg border border-zinc-300 bg-white p-4 text-sm dark:border-zinc-600 dark:bg-zinc-900">
           <p className="font-medium text-zinc-950 dark:text-white">{summary}</p>
-          {typeof state.result === "object" && state.result?.emailed ? (
-            <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-              {state.result.emailed}
-              {state.result.total_cents
-                ? ` · ${formatCents(state.result.total_cents)}`
-                : ""}
-            </p>
-          ) : null}
         </div>
       ) : null}
 
@@ -203,10 +157,10 @@ export function OrderStatus({ workflowId }: { workflowId: string }) {
       ) : null}
 
       <Link
-        href="/"
+        href="/demo"
         className="inline-block text-sm text-zinc-700 underline dark:text-zinc-300"
       >
-        Place another order
+        Start another demo workflow
       </Link>
     </div>
   );

@@ -1,43 +1,80 @@
-import { NativeConnection, Worker } from '@temporalio/worker';
+import fs from 'fs/promises';
+import { Worker, NativeConnection } from '@temporalio/worker';
 import * as activities from './activities';
-import { TASK_QUEUE } from './shared';
+import { Env, getEnv } from './interfaces/env';
 
-async function run() {
-  // Step 1: Establish a connection with Temporal server.
-  //
-  // Worker code uses `@temporalio/worker.NativeConnection`.
-  // (But in your application code it's `@temporalio/client.Connection`.)
-  const connection = await NativeConnection.connect({
-    address: 'localhost:7233',
-    // TLS and gRPC metadata configuration goes here.
-  });
-  try {
-    // Step 2: Register Workflows and Activities with the Worker.
-    const worker = await Worker.create({
-      connection,
-      namespace: 'default',
-      taskQueue: TASK_QUEUE,
-      // Workflows are registered using a path as they run in a separate JS context.
-      workflowsPath: require.resolve('./workflows'),
-      activities,
+/**
+ * Run a Worker with either mTLS or API key authentication.
+ * Configuration is provided via environment variables.
+ * 
+ * For mTLS: Requires clientCertPath and clientKeyPath
+ * For API key: Requires clientApiKey
+ * Note that serverNameOverride and serverRootCACertificate are optional.
+ */
+async function run({
+  address,
+  namespace,
+  clientCertPath,
+  clientKeyPath,
+  clientApiKey,
+  serverNameOverride,
+  serverRootCACertificatePath,
+  taskQueue,
+}: Env) {
+  let connection: NativeConnection;
+
+  // Check for mTLS certificates first
+  if (clientCertPath && clientKeyPath) {
+    console.log('Using mTLS authentication');
+    const serverRootCACertificate = serverRootCACertificatePath
+      ? await fs.readFile(serverRootCACertificatePath)
+      : undefined;
+
+    connection = await NativeConnection.connect({
+      address,
+      tls: {
+        serverNameOverride,
+        serverRootCACertificate,
+        clientCertPair: {
+          crt: await fs.readFile(clientCertPath),
+          key: await fs.readFile(clientKeyPath),
+        },
+      },
     });
-
-    // Step 3: Start accepting tasks on the TypeScript task queue
-    //
-    // The worker runs until it encounters an unexpected error or the process receives a shutdown signal registered on
-    // the SDK Runtime object.
-    //
-    // By default, worker logs are written via the Runtime logger to STDERR at INFO level.
-    //
-    // See https://typescript.temporal.io/api/classes/worker.Runtime#install to customize these defaults.
-    await worker.run();
-  } finally {
-    // Close the connection once the worker has stopped
-    await connection.close();
   }
+  // If no mTLS certificates, check for API key
+  else if (clientApiKey) {
+    console.log('Using API key authentication');
+    connection = await NativeConnection.connect({
+      address,
+      tls: true,
+      apiKey: clientApiKey,
+      metadata: {
+        'temporal-namespace': namespace,
+      },
+    });
+  }
+  // Fallback to unencrypted connection (not recommended for production)
+  else {
+    console.log('Warning: Using unencrypted connection');
+    connection = await NativeConnection.connect({ address });
+  }
+
+  const worker = await Worker.create({
+    connection,
+    namespace,
+    workflowsPath: require.resolve('../demo/register'),
+    taskQueue,
+    activities,
+  });
+
+  console.log('Worker connection successfully established');
+
+  await worker.run();
+  await connection.close();
 }
 
-run().catch((err) => {
+run(getEnv()).catch((err) => {
   console.error(err);
   process.exit(1);
 });

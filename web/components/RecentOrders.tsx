@@ -7,6 +7,7 @@ type Order = {
   workflowId: string;
   status: string;
   startTime: string;
+  worker?: "python" | "typescript";
 };
 
 export function RecentOrders() {
@@ -38,8 +39,8 @@ export function RecentOrders() {
               <span className="truncate font-mono text-xs">
                 {order.workflowId}
               </span>
-              <span className="text-zinc-600 dark:text-zinc-400">
-                {order.status}
+              <span className="ml-3 shrink-0 text-zinc-600 dark:text-zinc-400">
+                {order.worker === "typescript" ? "TS" : "Py"} · {order.status}
               </span>
             </Link>
           </li>
